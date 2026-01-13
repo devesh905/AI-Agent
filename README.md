@@ -16,3 +16,26 @@ An intelligent voice call system powered by AI, built with Asterisk, Groq API, a
 - **TTS**: Piper (Mozilla TTS)
 - **Language**: Python 3.12
 - **OS**: Ubuntu 24.04
+
+┌─────────────┐
+│   Phone     │
+│   Call      │
+└──────┬──────┘
+│
+┌──────▼──────────┐
+│   Asterisk      │
+│   (PBX)         │
+└──────┬──────────┘
+│
+┌──────▼──────────┐
+│  AGI Script     │
+│  (ai_call.py)   │
+└──────┬──────────┘
+│
+┌──────▼──────────────────────────────────┐
+│  AI Pipeline                             │
+│  ┌────────┐  ┌──────┐  ┌──────────┐    │
+│  │  STT   │─▶│  AI  │─▶│   TTS    │    │
+│  │ Groq   │  │ Groq │  │  Piper   │    │
+│  └────────┘  └──────┘  └──────────┘    │
+└──────────────────────────────────────────┘
