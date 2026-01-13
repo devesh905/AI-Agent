@@ -27,26 +27,50 @@ def agi(cmd):
     return agi_read()
 
 try:
+    log("========== NEW CALL STARTED ==========")
+    
     # Read AGI environment
-    while agi_read():
-        pass
-
-    agi("ANSWER")
+    env = {}
+    while True:
+        line = agi_read()
+        if not line:
+            break
+        if ':' in line:
+            key, val = line.split(':', 1)
+            env[key.strip()] = val.strip()
+    
+    log(f"AGI Environment loaded: {len(env)} vars")
+    
+    # Answer the call
+    result = agi("ANSWER")
+    log(f"Answer result: {result}")
     time.sleep(0.5)
     
     # Reset conversation for new call
     reset_conversation()
+    log("Conversation reset")
     
     # Play welcome message
-    welcome = "Hello! I'm your banking assistant. How can I help you today?"
-    welcome_file = text_to_speech(welcome)
-    agi(f'STREAM FILE {welcome_file} ""')
+    welcome = "Hello! I'm your Subharti AI hospital assistant Lucy. How can I help you today?"
+    log(f"Generating welcome TTS: {welcome}")
+    
+    try:
+        welcome_file = text_to_speech(welcome)
+        log(f"Welcome file created: {welcome_file}")
+        result = agi(f'STREAM FILE {welcome_file} ""')
+        log(f"Welcome playback result: {result}")
+    except Exception as e:
+        log(f"ERROR in welcome TTS: {e}")
+        # Try fallback
+        result = agi('STREAM FILE hello-world ""')
+        log(f"Fallback playback result: {result}")
+    
     time.sleep(0.3)
 
-    MAX_TURNS = 10  # Increased for better conversation
+    MAX_TURNS = 10
 
     for turn in range(MAX_TURNS):
-        log(f"---- TURN {turn+1} ----")
+        log(f"========== TURN {turn+1}/{MAX_TURNS} ==========")
 
         # Use unique filename
         record_file = f"{RECORD_DIR}/input_{int(time.time())}_{turn}"
@@ -55,27 +79,25 @@ try:
         # Delete old recording if exists
         if os.path.exists(audio_file):
             os.remove(audio_file)
+            log(f"Deleted old recording: {audio_file}")
 
         # Play beep
-        agi('STREAM FILE beep ""')
+        result = agi('STREAM FILE beep ""')
+        log(f"Beep result: {result}")
         time.sleep(0.1)
 
-        # Record with SHORTER timeout (5 seconds silence = stop)
-        # This stops recording automatically when user stops speaking
-        result = agi(f'RECORD FILE {record_file} wav "#" 5000 s=2 BEEP')
-        
-        # s=2 means: stop if 2 seconds of silence detected
-        # This makes it MUCH faster!
-        
+        # Record with 2 second silence detection
+        log(f"Starting recording to: {record_file}")
+        result = agi(f'RECORD FILE {record_file} wav "#" 10000 s=2 BEEP')
         log(f"Recording result: {result}")
         
         # Check if recording failed
         if "result=-1" in result or "writefile" in result:
-            log("ERROR: Recording failed")
+            log("ERROR: Recording failed - breaking loop")
             break
 
-        # Wait for file
-        time.sleep(0.3)
+        # Wait for file to be written
+        time.sleep(0.5)
 
         # Check file exists
         if not os.path.exists(audio_file):
@@ -83,14 +105,17 @@ try:
             break
 
         file_size = os.path.getsize(audio_file)
-        log(f"Recording size: {file_size} bytes")
+        log(f"Recording created: {file_size} bytes")
         
         # Check for silence (very small file)
-        if file_size < 5000:  # Less than ~0.3 seconds
-            log("Too short - probably silence")
+        if file_size < 5000:
+            log("Recording too short - probably silence")
             reply = "I didn't hear you. Please speak after the beep."
-            out = text_to_speech(reply)
-            agi(f'STREAM FILE {out} ""')
+            try:
+                out = text_to_speech(reply)
+                agi(f'STREAM FILE {out} ""')
+            except Exception as e:
+                log(f"ERROR in silence TTS: {e}")
             
             # Delete tiny recording
             try:
@@ -100,55 +125,84 @@ try:
             
             continue
 
-        # Transcribe using Groq (FAST!)
+        # Transcribe using Groq
+        log("Starting transcription...")
         start = time.time()
-        text = transcribe_audio_groq(audio_file)
-        stt_time = time.time() - start
-        
-        log(f"STT ({stt_time:.2f}s): '{text}'")
+        try:
+            text = transcribe_audio_groq(audio_file)
+            stt_time = time.time() - start
+            log(f"STT completed in {stt_time:.2f}s: '{text}'")
+        except Exception as e:
+            log(f"ERROR in transcription: {e}")
+            log(traceback.format_exc())
+            text = ""
 
         # Delete recording after transcription
         try:
             os.remove(audio_file)
-        except:
-            pass
+            log("Recording deleted")
+        except Exception as e:
+            log(f"Could not delete recording: {e}")
 
         # Handle empty transcription
         if not text.strip():
+            log("Empty transcription received")
             reply = "I couldn't understand that. Please try again."
-            out = text_to_speech(reply)
-            agi(f'STREAM FILE {out} ""')
+            try:
+                out = text_to_speech(reply)
+                agi(f'STREAM FILE {out} ""')
+            except Exception as e:
+                log(f"ERROR in empty transcription TTS: {e}")
             continue
 
         # Check for goodbye
         goodbye_words = ["bye", "goodbye", "exit", "quit", "thank you bye", "that's all"]
         if any(word in text.lower() for word in goodbye_words):
-            # Check if it's just "thank you" (not goodbye)
             if "thank" in text.lower() and not any(x in text.lower() for x in ["bye", "all", "exit"]):
-                pass  # Continue conversation
+                log("Just 'thank you' - continuing conversation")
+                pass
             else:
+                log("Goodbye detected - ending call")
                 reply = "Thank you for calling. Have a great day!"
-                out = text_to_speech(reply)
-                agi(f'STREAM FILE {out} ""')
+                try:
+                    out = text_to_speech(reply)
+                    agi(f'STREAM FILE {out} ""')
+                except Exception as e:
+                    log(f"ERROR in goodbye TTS: {e}")
                 break
 
-        # Get AI response using Groq (FAST!)
+        # Get AI response using Groq
+        log("Getting AI response...")
         start = time.time()
-        reply = get_groq_response(text)
-        ai_time = time.time() - start
-        
-        log(f"AI ({ai_time:.2f}s): '{reply}'")
+        try:
+            reply = get_groq_response(text)
+            ai_time = time.time() - start
+            log(f"AI response in {ai_time:.2f}s: '{reply}'")
+        except Exception as e:
+            log(f"ERROR in AI response: {e}")
+            log(traceback.format_exc())
+            reply = "I'm having trouble right now. Let me transfer you to someone who can help."
 
         # Speak response
-        out = text_to_speech(reply)
-        agi(f'STREAM FILE {out} ""')
+        log("Generating response TTS...")
+        try:
+            out = text_to_speech(reply)
+            log(f"TTS file created: {out}")
+            result = agi(f'STREAM FILE {out} ""')
+            log(f"Response playback result: {result}")
+        except Exception as e:
+            log(f"ERROR in response TTS: {e}")
+            log(traceback.format_exc())
 
         time.sleep(0.2)
 
+    log("Conversation loop ended - hanging up")
     agi("HANGUP")
+    log("========== CALL ENDED ==========")
 
 except Exception as e:
-    log("EXCEPTION: " + str(e))
+    log("========== FATAL EXCEPTION ==========")
+    log(f"Exception: {str(e)}")
     log(traceback.format_exc())
     try:
         agi("HANGUP")

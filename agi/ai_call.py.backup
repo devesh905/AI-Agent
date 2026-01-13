@@ -3,14 +3,13 @@
 import sys, os, time, traceback
 
 BASE = "/home/devesh/ai-asterisk"
-RECORD_DIR = "/var/lib/asterisk/sounds/recordings"  # Asterisk-writable directory
+RECORD_DIR = "/var/lib/asterisk/sounds/recordings"
 LOG = "/tmp/agi_debug.log"
 
 sys.path.append(BASE)
 
-from stt.stt_faster_whisper import speech_to_text
-from ai_logic.logic import get_ai_response
-from tts.tts_espeak import text_to_speech
+from ai_logic.groq_ai import transcribe_audio_groq, get_groq_response, reset_conversation
+from tts.tts_piper import text_to_speech
 
 def log(m):
     with open(LOG, "a") as f:
@@ -33,94 +32,160 @@ try:
         pass
 
     agi("ANSWER")
-    time.sleep(0.3)
+    time.sleep(0.7)  # Slightly longer pause for professional feel
+    
+    # Reset conversation for new call
+    reset_conversation()
+    
+    # Welcome message (calm and professional)
+    welcome = """Hello, and welcome to Subharti Hospital, Meerut. 
+    I am your virtual assistant. 
+    How may I help you today?"""
+    
+    welcome_file = text_to_speech(welcome)
+    agi(f'STREAM FILE {welcome_file} ""')
+    time.sleep(0.5)  # Pause after greeting
 
-    MAX_TURNS = 5
+    MAX_TURNS = 15  # Allow longer conversations for detailed help
 
     for turn in range(MAX_TURNS):
         log(f"---- TURN {turn+1} ----")
 
-        # Use unique filename for each recording
+        # Use unique filename
         record_file = f"{RECORD_DIR}/input_{int(time.time())}_{turn}"
         audio_file = record_file + ".wav"
 
         # Delete old recording if exists
         if os.path.exists(audio_file):
             os.remove(audio_file)
-            log(f"Deleted old file: {audio_file}")
 
-        # Play beep
+        # Play beep (softer tone)
         agi('STREAM FILE beep ""')
+        time.sleep(0.2)
 
-        # Record audio (15 seconds max, stop on #)
-        result = agi(f'RECORD FILE {record_file} wav "#" 15000 0 BEEP')
+        # Record with voice activity detection
+        # Longer timeout for patients who speak slowly
+        result = agi(f'RECORD FILE {record_file} wav "#" 7000 s=3 BEEP')
         
-        # Check if recording succeeded
+        # s=3 means: stop if 3 seconds of silence (patients may pause)
+        
+        log(f"Recording result: {result}")
+        
+        # Check if recording failed
         if "result=-1" in result or "writefile" in result:
-            log("ERROR: Recording failed - permission issue or disk full")
-            agi('STREAM FILE "sorry, recording failed" ""')
+            log("ERROR: Recording failed")
             break
 
-        # Wait for file to be written
-        time.sleep(0.5)
+        # Wait for file
+        time.sleep(0.4)
 
-        # Check if file exists and has content
+        # Check file exists
         if not os.path.exists(audio_file):
-            log(f"ERROR: Recording file not found: {audio_file}")
-            agi('STREAM FILE "sorry, no audio recorded" ""')
+            log(f"ERROR: File not found: {audio_file}")
             break
 
         file_size = os.path.getsize(audio_file)
         log(f"Recording size: {file_size} bytes")
         
-        if file_size < 8000:  # Less than ~0.5 seconds
-            log("No significant audio recorded (silence or too short)")
-            reply = "I did not hear you. Please speak after the beep."
+        # Check for silence (very small file)
+        if file_size < 5000:  # Less than ~0.3 seconds
+            log("Too short - probably silence")
+            reply = "I'm sorry, I didn't hear you clearly. Please speak after the beep."
             out = text_to_speech(reply)
             agi(f'STREAM FILE {out} ""')
+            
+            # Delete tiny recording
+            try:
+                os.remove(audio_file)
+            except:
+                pass
+            
             continue
 
-        # Transcribe audio
-        text = speech_to_text(audio_file)
-        log(f"STT: '{text}'")
+        # Transcribe using Groq (supports English + Hindi)
+        start = time.time()
+        text = transcribe_audio_groq(audio_file)
+        stt_time = time.time() - start
+        
+        log(f"STT ({stt_time:.2f}s): '{text}'")
 
         # Delete recording after transcription
         try:
             os.remove(audio_file)
-            log(f"Deleted recording: {audio_file}")
         except:
             pass
 
         # Handle empty transcription
         if not text.strip():
-            reply = "I did not hear you clearly. Please repeat."
+            reply = "I couldn't understand that. Could you please repeat your question?"
             out = text_to_speech(reply)
             agi(f'STREAM FILE {out} ""')
             continue
 
-        # Check for goodbye
-        if any(x in text.lower() for x in ["bye", "goodbye", "exit", "quit"]):
-            reply = "Goodbye. Have a nice day."
+        # Check for goodbye/end call
+        goodbye_words = ["bye", "goodbye", "thank you bye", "that's all", "okay bye", 
+                        "धन्यवाद", "thik hai", "bas", "khatam"]
+        
+        text_lower = text.lower()
+        
+        # Check if it's just "thank you" or actual goodbye
+        if any(word in text_lower for word in goodbye_words):
+            # If just "thank you" without goodbye, continue
+            if "thank" in text_lower and not any(x in text_lower for x in ["bye", "all", "bas", "khatam"]):
+                pass  # Continue conversation
+            else:
+                reply = "Thank you for calling Subharti Hospital. Take care and get well soon. Goodbye."
+                out = text_to_speech(reply)
+                agi(f'STREAM FILE {out} ""')
+                break
+
+        # Check for emergency keywords
+        emergency_keywords = ["emergency", "accident", "urgent", "critical", "bleeding", 
+                             "heart attack", "stroke", "emergency mein"]
+        
+        if any(keyword in text_lower for keyword in emergency_keywords):
+            reply = """This is an emergency. Please come to Gate Number 1, the main entrance, immediately. 
+            Our emergency team is available 24 hours. 
+            If you need an ambulance, please call 0121-2439056."""
+            
             out = text_to_speech(reply)
             agi(f'STREAM FILE {out} ""')
-            break
+            time.sleep(0.5)
+            
+            # Ask if they need more help
+            reply2 = "Is there anything else I can help you with?"
+            out2 = text_to_speech(reply2)
+            agi(f'STREAM FILE {out2} ""')
+            continue
 
-        # Get AI response
-        reply = get_ai_response(text)
-        log(f"AI: '{reply}'")
+        # Get AI response (slower, more professional)
+        start = time.time()
+        reply = get_groq_response(text)
+        ai_time = time.time() - start
+        
+        log(f"AI ({ai_time:.2f}s): '{reply}'")
 
-        # Speak response
+        # Speak response (with pauses for clarity)
         out = text_to_speech(reply)
         agi(f'STREAM FILE {out} ""')
+        
+        time.sleep(0.5)  # Longer pause after each response
 
-        time.sleep(0.3)
-
+    # End call message
+    goodbye = "Thank you for calling Subharti Hospital. Have a good day."
+    goodbye_file = text_to_speech(goodbye)
+    agi(f'STREAM FILE {goodbye_file} ""')
+    
     agi("HANGUP")
 
 except Exception as e:
     log("EXCEPTION: " + str(e))
     log(traceback.format_exc())
     try:
+        # Error message in Hindi-English
+        error_msg = "I apologize, there is a technical issue. Please call our helpline at 0121-2439056."
+        error_file = text_to_speech(error_msg)
+        agi(f'STREAM FILE {error_file} ""')
         agi("HANGUP")
     except:
         pass

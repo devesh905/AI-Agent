@@ -1,5 +1,3 @@
-# File: /home/devesh/ai-asterisk/ai_logic/groq_ai.py
-
 import os
 from groq import Groq
 
@@ -15,13 +13,16 @@ client = Groq(api_key=GROQ_API_KEY)
 conversation_history = []
 
 def transcribe_audio_groq(audio_file):
-
+    """
+    Transcribe audio using Groq Whisper
+    Supports English and Hindi
+    """
     try:
         with open(audio_file, "rb") as file:
             transcription = client.audio.transcriptions.create(
                 file=(audio_file, file.read()),
                 model="whisper-large-v3",
-                language="en",  # Change to "hi" for Hindi, or remove for auto-detect
+                language="en",  # Change to None for auto-detect
                 temperature=0.0,
                 response_format="json"
             )
@@ -32,26 +33,51 @@ def transcribe_audio_groq(audio_file):
 
 
 def get_groq_response(user_text, system_prompt=None):
+    """
+    Get AI response for Subharti Hospital assistant
+    """
     
-    # Default system prompt for banking assistant
+    # Default system prompt - SHORTER version
     if system_prompt is None:
-        system_prompt = """You are a helpful banking assistant for a phone call system.
+        system_prompt = """You are a helpful assistant for Subharti Hospital in Meerut, India.
+
+IMPORTANT: Keep responses SHORT (2-3 sentences maximum). This is a phone call.
+
+Key Information:
+- OPD: Gate 2, Ground Floor, Mon-Sat 8:00 AM to 4:00 PM
+- Consultation fees vary by doctor and speciality. They usually range depending on the experience of the doctor and department.
+- Emergency: Gate 1 (Main Entrance), 24/7
+- Lab: Main Building, Ground Floor, 8AM-4PM (Emergency 24/7)
+- The hospital has a NABL-accredited central laboratory providing a wide range of tests for hematology, biochemistry, microbiology, serology, pathology, and more with quality standards.
+- Pharmacy: Ground Floor near Gate 3, 24/7
+- 24×7 functional Operation Theatres
+- ICU/CCU/HDU for critical patients
+- Helpline: 09639010313
+- Email: it.hospital@subharti.org
+
+Imaging & Radiology:
+-The hospital has advanced imaging including:
+-3 Tesla MRI
+-160 slice CT Scanner
+-Ultrasound, Doppler
+-Digital X-Ray
+-Digital Mammography
+- 
 Rules:
-- Keep responses SHORT (1-2 sentences max)
-- Be friendly and professional
-- Speak naturally (this will be converted to speech)
-- Handle: balance inquiries, transactions, account info
-- If asked something you don't know, say "Let me transfer you to a representative"
-- Don't use special characters or formatting
+- Be warm and professional
+- Give clear, simple directions
+- Don't give medical advice - say "please consult a doctor"
+- If unsure, offer to transfer to reception
+- Keep it conversational and natural
 """
 
     # Add user message to history
     conversation_history.append({"role": "user", "content": user_text})
     
-    # Keep only last 10 messages (to stay within token limits)
-    if len(conversation_history) > 10:
+    # Keep only last 6 messages (3 turns) to avoid token issues
+    if len(conversation_history) > 6:
         conversation_history.pop(0)
-        conversation_history.pop(0)  # Remove user + assistant pair
+        conversation_history.pop(0)
     
     try:
         # Call Groq API
@@ -60,9 +86,9 @@ Rules:
                 {"role": "system", "content": system_prompt},
                 *conversation_history
             ],
-            model="llama-3.3-70b-versatile",  # Fast and smart
+            model="llama-3.3-70b-versatile",
             temperature=0.7,
-            max_tokens=150,  # Keep responses short for TTS
+            max_tokens=150,  # Keep responses short
             top_p=1,
             stream=False
         )
@@ -76,12 +102,10 @@ Rules:
         
     except Exception as e:
         print(f"Groq AI Error: {e}")
-        return "I'm having trouble processing that. Please try again."
+        return "I'm having trouble processing that. Please call our helpline at 0121-2439056 for immediate assistance."
 
 
 def reset_conversation():
     """Reset conversation history for new call"""
     global conversation_history
     conversation_history = []
-
-
