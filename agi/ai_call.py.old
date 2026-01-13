@@ -1,0 +1,126 @@
+#!/home/devesh/ai-asterisk/venv/bin/python3
+
+import sys, os, time, traceback
+
+BASE = "/home/devesh/ai-asterisk"
+RECORD_DIR = "/var/lib/asterisk/sounds/recordings"  # Asterisk-writable directory
+LOG = "/tmp/agi_debug.log"
+
+sys.path.append(BASE)
+
+from stt.stt_faster_whisper import speech_to_text
+from ai_logic.logic import get_ai_response
+from tts.tts_espeak import text_to_speech
+
+def log(m):
+    with open(LOG, "a") as f:
+        f.write(f"{time.strftime('%H:%M:%S')} {m}\n")
+
+def agi_read():
+    l = sys.stdin.readline().strip()
+    log("RECV: " + l)
+    return l
+
+def agi(cmd):
+    sys.stdout.write(cmd + "\n")
+    sys.stdout.flush()
+    log("SENT: " + cmd)
+    return agi_read()
+
+try:
+    # Read AGI environment
+    while agi_read():
+        pass
+
+    agi("ANSWER")
+    time.sleep(0.3)
+
+    MAX_TURNS = 5
+
+    for turn in range(MAX_TURNS):
+        log(f"---- TURN {turn+1} ----")
+
+        # Use unique filename for each recording
+        record_file = f"{RECORD_DIR}/input_{int(time.time())}_{turn}"
+        audio_file = record_file + ".wav"
+
+        # Delete old recording if exists
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+            log(f"Deleted old file: {audio_file}")
+
+        # Play beep
+        agi('STREAM FILE beep ""')
+
+        # Record audio (15 seconds max, stop on #)
+        result = agi(f'RECORD FILE {record_file} wav "#" 15000 0 BEEP')
+        
+        # Check if recording succeeded
+        if "result=-1" in result or "writefile" in result:
+            log("ERROR: Recording failed - permission issue or disk full")
+            agi('STREAM FILE "sorry, recording failed" ""')
+            break
+
+        # Wait for file to be written
+        time.sleep(0.5)
+
+        # Check if file exists and has content
+        if not os.path.exists(audio_file):
+            log(f"ERROR: Recording file not found: {audio_file}")
+            agi('STREAM FILE "sorry, no audio recorded" ""')
+            break
+
+        file_size = os.path.getsize(audio_file)
+        log(f"Recording size: {file_size} bytes")
+        
+        if file_size < 8000:  # Less than ~0.5 seconds
+            log("No significant audio recorded (silence or too short)")
+            reply = "I did not hear you. Please speak after the beep."
+            out = text_to_speech(reply)
+            agi(f'STREAM FILE {out} ""')
+            continue
+
+        # Transcribe audio
+        text = speech_to_text(audio_file)
+        log(f"STT: '{text}'")
+
+        # Delete recording after transcription
+        try:
+            os.remove(audio_file)
+            log(f"Deleted recording: {audio_file}")
+        except:
+            pass
+
+        # Handle empty transcription
+        if not text.strip():
+            reply = "I did not hear you clearly. Please repeat."
+            out = text_to_speech(reply)
+            agi(f'STREAM FILE {out} ""')
+            continue
+
+        # Check for goodbye
+        if any(x in text.lower() for x in ["bye", "goodbye", "exit", "quit"]):
+            reply = "Goodbye. Have a nice day."
+            out = text_to_speech(reply)
+            agi(f'STREAM FILE {out} ""')
+            break
+
+        # Get AI response
+        reply = get_ai_response(text)
+        log(f"AI: '{reply}'")
+
+        # Speak response
+        out = text_to_speech(reply)
+        agi(f'STREAM FILE {out} ""')
+
+        time.sleep(0.3)
+
+    agi("HANGUP")
+
+except Exception as e:
+    log("EXCEPTION: " + str(e))
+    log(traceback.format_exc())
+    try:
+        agi("HANGUP")
+    except:
+        pass

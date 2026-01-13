@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Virtual Environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/
+logs/
+
+# Audio files (generated)
+*.wav
+*.mp3
+*.ogg
+
+# API Keys and Secrets
+.env
+*.key
+secrets.txt
+
+# Asterisk specific
+/var/lib/asterisk/
+recordings/
+
+# Voice models (large files)
+*.onnx
+*.onnx.json
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak
+*.swp
+
+# Test files
+test_*.py
+scratch/
