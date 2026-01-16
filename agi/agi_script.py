@@ -1,7 +1,6 @@
-#!/home/devesh/ai-asterisk/venv/bin/python3
+#!/usr/bin/env python3
 """
 Enhanced AGI Script with Database Integration
-FULLY BACKWARDS COMPATIBLE - Won't break existing functionality
 """
 
 import sys, os, time, traceback
