@@ -55,3 +55,6 @@ recordings/
 # Test files
 test_*.py
 scratch/
+data/
+*.db
+venv*/
