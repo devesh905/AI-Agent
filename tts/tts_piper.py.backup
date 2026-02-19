@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""
+Smart Multi-Language Piper TTS with Auto Language Detection
+BUG FIX: chmod 755 on output files so Asterisk can stream them
+FIX #2: Ensure file is fully written and synced before returning
+"""
+
+import subprocess
+import time
+import os
+import json
+
+PIPER_BIN = "/home/devesh/ai-asterisk/venv/bin/piper"
+
+VOICES = {
+    "hi": {
+        "model":       "/home/devesh/ai-asterisk/hi_IN-priyamvada-medium.onnx",
+        "config":      "/home/devesh/ai-asterisk/hi_IN-priyamvada-medium.onnx.json",
+        "speed":       0.95,
+        "noise_scale": 0.667,
+        "noise_w":     0.8,
+    },
+    "en": {
+        "model":       "/home/devesh/ai-asterisk/en_US-lessac-medium.onnx",
+        "config":      "/home/devesh/ai-asterisk/en_US-lessac-medium.onnx.json",
+        "speed":       1.0,
+        "noise_scale": 0.667,
+        "noise_w":     0.8,
+    }
+}
+
+OUTPUT_DIR_BASE = "/var/lib/asterisk/sounds"
+DEFAULT_LANGUAGE = "hi"
+
+
+def detect_language(text):
+    try:
+        from fast_langdetect import detect
+        result = detect(text=text, low_memory=True)
+
+        if isinstance(result, dict):
+            lang_code = result.get('lang', 'en')
+        elif isinstance(result, list) and len(result) > 0:
+            lang_code = result[0].get('lang', 'en')
+        else:
+            lang_code = 'en'
+
+        if lang_code in ['hi', 'hi-IN', 'hi_IN']:
+            return 'hi'
+        elif lang_code in ['en', 'en-US', 'en_US', 'en-GB']:
+            return 'en'
+        else:
+            return DEFAULT_LANGUAGE
+
+    except ImportError:
+        return DEFAULT_LANGUAGE
+    except Exception as e:
+        print(f"Language detection error: {e}")
+        return DEFAULT_LANGUAGE
+
+
+def text_to_speech(text, force_language=None):
+    """
+    Convert text to speech using Piper TTS.
+    Returns path WITHOUT .wav extension (for Asterisk STREAM FILE).
+
+    BUG FIX: chmod 755 so Asterisk (running as asterisk user) can read the file.
+    FIX #2: Ensure file is fully written and synced before returning.
+    """
+    ts = int(time.time())
+
+    # Language detection
+    if force_language and force_language in VOICES:
+        language = force_language
+    else:
+        language = detect_language(text)
+        if language not in VOICES:
+            language = DEFAULT_LANGUAGE
+
+    voice_model  = VOICES[language]["model"]
+    speech_speed = VOICES[language]["speed"]
+
+    # Fallback if model missing
+    if not os.path.exists(voice_model):
+        fallback = "en" if language == "hi" else "hi"
+        if os.path.exists(VOICES[fallback]["model"]):
+            language     = fallback
+            voice_model  = VOICES[language]["model"]
+            speech_speed = VOICES[language]["speed"]
+        else:
+            raise RuntimeError("No voice models found!")
+
+    # Output paths
+    output_dir = f"{OUTPUT_DIR_BASE}/{language}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    temp_wav  = f"/tmp/piper_temp_{ts}_{language}.wav"
+    final_wav = f"{output_dir}/ai_reply_{ts}.wav"
+
+    # ── Step 1: Generate with Piper ──
+    cmd = [
+        PIPER_BIN,
+        "--model",        voice_model,
+        "--output_file",  temp_wav,
+        "--length_scale", str(speech_speed),
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    stdout, stderr = proc.communicate(input=text + "\n")
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"Piper failed: {stderr}")
+
+    if not os.path.exists(temp_wav):
+        raise RuntimeError(f"Piper output not created: {temp_wav}")
+
+    # ── Step 2: Convert to Asterisk telephony format ──
+    # 8000 Hz, 16-bit, mono (required for Asterisk)
+    converted = False
+
+    # Try sox first
+    try:
+        subprocess.run([
+            "sox", temp_wav,
+            "-r", "8000",
+            "-c", "1",
+            "-b", "16",
+            "--norm=-3",
+            final_wav,
+            "bass", "+2"
+        ], check=True, stderr=subprocess.PIPE)
+        converted = True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+
+    # Fallback to ffmpeg
+    if not converted:
+        try:
+            subprocess.run([
+                "ffmpeg",
+                "-i",  temp_wav,
+                "-ar", "8000",
+                "-ac", "1",
+                "-af", "volume=1.2",
+                "-y",
+                final_wav
+            ], check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            converted = True
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            raise RuntimeError(f"Audio conversion failed: {e}")
+
+    # Clean up temp
+    if os.path.exists(temp_wav):
+        os.remove(temp_wav)
+
+    if not os.path.exists(final_wav):
+        raise RuntimeError(f"Final wav not created: {final_wav}")
+
+    # ── BUG FIX #3: Set permissions so Asterisk (asterisk user) can read ──
+    os.chmod(final_wav, 0o755)
+    
+    # ── FIX #4: Force filesystem sync to ensure file is fully written ──
+    # This ensures the file is actually on disk before Asterisk tries to read it
+    try:
+        with open(final_wav, 'rb') as f:
+            os.fsync(f.fileno())
+    except:
+        pass
+    
+    # Small additional wait to ensure file is ready
+    time.sleep(0.2)
+
+    # Return path WITHOUT .wav — Asterisk STREAM FILE adds it automatically
+    return final_wav.replace(".wav", "")
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("Testing Multi-Language TTS")
+    print("=" * 60)
+
+    hindi_text = "नमस्ते! मैं लूसी हूं, सुभारती हॉस्पिटल की सहायक।"
+    print(f"\n1. Testing Hindi: {hindi_text}")
+    out = text_to_speech(hindi_text)
+    print(f"   ✓ Output: {out}.wav")
+
+    english_text = "Hello! I'm Lucy, your Subharti Hospital assistant."
+    print(f"\n2. Testing English: {english_text}")
+    out = text_to_speech(english_text)
+    print(f"   ✓ Output: {out}.wav")
+
+    print("\n" + "=" * 60)
+    print("All tests passed!")

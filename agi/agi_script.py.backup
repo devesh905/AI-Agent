@@ -1,0 +1,198 @@
+#!/home/devesh/ai-asterisk/venv311/bin/python3
+"""
+Lucy AI – WORKING AGI SCRIPT
+dialplan does: Answer() + Wait(2) + AGI()
+So we do NOT call ANSWER here - channel is already up and ready
+"""
+
+import sys
+import os
+import time
+import traceback
+
+BASE       = "/home/devesh/ai-asterisk"
+SOUNDS_DIR = "/var/lib/asterisk/sounds"
+REC_DIR    = "/tmp"
+LOG_FILE   = "/tmp/agi_debug.log"
+
+sys.path.append(BASE)
+
+from ai_logic.groq_ai_enhanced import get_groq_response, reset_conversation
+from ai_logic.groq_ai_enhanced import transcribe_audio_groq
+from tts.tts_piper import text_to_speech
+
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+
+def agi_read():
+    line = sys.stdin.readline().strip()
+    log(f"RECV: {line}")
+    return line
+
+def agi(cmd, read_response=True):
+    sys.stdout.write(cmd + "\n")
+    sys.stdout.flush()
+    log(f"SENT: {cmd}")
+    if read_response:
+        return agi_read()
+    return ""
+
+def stream_file(full_path):
+    """
+    Stream audio file to Asterisk.
+    Handles path conversion and ensures file exists before streaming.
+    """
+    # Remove .wav extension - Asterisk adds it
+    path = full_path.replace(".wav", "")
+    
+    # Remove SOUNDS_DIR prefix if present - Asterisk adds it internally
+    prefix = SOUNDS_DIR + "/"
+    if path.startswith(prefix):
+        path = path[len(prefix):]
+    
+    # Ensure the actual file exists
+    actual_file = f"{SOUNDS_DIR}/{path}.wav"
+    if not os.path.exists(actual_file):
+        log(f"ERROR: Audio file not found: {actual_file}")
+        return "200 result=-1"
+    
+    # Check file size
+    size = os.path.getsize(actual_file)
+    log(f"STREAMING: {path} (size: {size} bytes)")
+    
+    if size < 1000:
+        log(f"WARNING: File too small: {size} bytes")
+        return "200 result=-1"
+    
+    result = agi(f'STREAM FILE {path} ""')
+    log(f"STREAM result: {result}")
+    return result
+
+def say(text):
+    """Generate TTS and stream it"""
+    try:
+        audio_path = text_to_speech(text)
+        log(f"TTS generated: {audio_path}")
+        
+        # Verify file was created
+        audio_file = audio_path + ".wav"
+        if not os.path.exists(audio_file):
+            log(f"ERROR: TTS file not created: {audio_file}")
+            return "200 result=-1"
+        
+        # Set permissions
+        try:
+            os.chmod(audio_file, 0o755)
+        except Exception as e:
+            log(f"chmod warning: {e}")
+        
+        # Stream the file
+        return stream_file(audio_path)
+        
+    except Exception as e:
+        log(f"TTS ERROR: {e}")
+        log(traceback.format_exc())
+        return "200 result=-1"
+
+def wait_for_file(filepath, max_wait=10.0):
+    waited = 0.0
+    while waited < max_wait:
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 100:
+            time.sleep(0.5)
+            return True
+        time.sleep(0.3)
+        waited += 0.3
+    return False
+
+
+try:
+    log("========== NEW CALL ==========")
+
+    env = {}
+    while True:
+        line = agi_read()
+        if not line:
+            break
+        if ":" in line:
+            k, v = line.split(":", 1)
+            env[k.strip()] = v.strip()
+
+    caller = env.get("agi_callerid", "unknown")
+    log(f"Caller: {caller} | Priority: {env.get('agi_priority','?')}")
+
+    # Channel is already answered + waited by dialplan - DO NOT call ANSWER
+    # Just reset and go
+    reset_conversation()
+
+    result = say("Hello! I am Lucy, your Subharti Hospital assistant. How can I help you today?")
+    log(f"Welcome result: {result}")
+
+    for turn in range(10):
+        log(f"=== TURN {turn+1} ===")
+
+        ts         = int(time.time())
+        rec_path   = f"{REC_DIR}/lucy_{ts}_{turn}"
+        wav_file   = rec_path + ".wav"
+
+        if os.path.exists(wav_file):
+            os.remove(wav_file)
+
+        result = agi(f'RECORD FILE {rec_path} wav "#" 8000 0')
+        log(f"RECORD: {result}")
+
+        found = wait_for_file(wav_file)
+        log(f"File found: {found} | Path: {wav_file}")
+
+        if not found:
+            log(f"No file - listing /tmp: {[f for f in os.listdir(REC_DIR) if 'lucy_' in f]}")
+            say("I didn't hear you. Please speak after the tone.")
+            continue
+
+        size = os.path.getsize(wav_file)
+        log(f"File size: {size}")
+
+        if size < 8000:
+            log("Too small - silence")
+            say("I didn't hear you clearly. Please try again.")
+            os.remove(wav_file)
+            continue
+
+        try:
+            text = transcribe_audio_groq(wav_file)
+            log(f"STT: [{text}]")
+        except Exception as e:
+            log(f"STT error: {e}")
+            text = ""
+
+        os.remove(wav_file)
+
+        if not text.strip():
+            say("Sorry, I could not understand. Please try again.")
+            continue
+
+        if any(w in text.lower() for w in ["bye", "goodbye", "quit", "exit"]):
+            say("Thank you for calling Subharti Hospital. Goodbye!")
+            time.sleep(1.5)
+            break
+
+        try:
+            reply = get_groq_response(text, caller_number=caller)
+            log(f"AI: [{reply}]")
+        except Exception:
+            log(traceback.format_exc())
+            reply = "Please call our helpline at 09639010313."
+
+        say(reply)
+
+    agi("HANGUP", read_response=False)
+    log("=== CALL ENDED ===")
+
+except Exception as e:
+    log(f"FATAL: {e}")
+    log(traceback.format_exc())
+    try:
+        agi("HANGUP", read_response=False)
+    except:
+        pass
