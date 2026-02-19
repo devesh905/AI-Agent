@@ -13,7 +13,7 @@ An intelligent voice call system powered by AI, built with Asterisk, Groq API, a
 - **PBX**: Asterisk (VoIP/telephony)
 - **STT**: Groq Whisper Large V3
 - **AI**: Groq LLaMA 3.3 70B
-- **TTS**: Piper (Mozilla TTS)
+- **TTS**: Piper (Mozilla TTS) + Hindi Support too
 - **Language**: Python 3.12
 - **OS**: Ubuntu 24.04
 
